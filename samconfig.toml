@@ -1,0 +1,15 @@
+version = 0.1
+
+[default.global.parameters]
+stack_name = "medium-daily-digest"
+
+[default.build.parameters]
+cached = true
+parallel = true
+
+[default.deploy.parameters]
+capabilities = "CAPABILITY_IAM"
+confirm_changeset = true
+resolve_s3 = true
+# region = "ap-northeast-1"
+# parameter_overrides = "SecretArn=arn:aws:secretsmanager:REGION:ACCOUNT:secret:NAME EnableSchedule=false"

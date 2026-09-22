@@ -1,0 +1,104 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+Description: Medium daily RSS digest → Claude summary → LINE push (Taipei 12:00)
+
+Parameters:
+  SecretArn:
+    Type: String
+    Description: Secrets Manager ARN with CLAUDE_API_KEY, LINE_CHANNEL_ACCESS_TOKEN, LINE_USER_ID
+  MediumRssUrl:
+    Type: String
+    Default: https://medium.com/feed/@h9r2sx0m
+  ClaudeModel:
+    Type: String
+    Default: claude-sonnet-4-5
+  EnableSchedule:
+    Type: String
+    Default: "true"
+    AllowedValues: ["true", "false"]
+    Description: Set false for first deploy/manual testing without EventBridge
+
+Conditions:
+  ScheduleEnabled: !Equals [!Ref EnableSchedule, "true"]
+
+Globals:
+  Function:
+    Timeout: 60
+    MemorySize: 256
+    Runtime: python3.12
+
+Resources:
+  DigestTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: medium_daily_digest
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: article_id
+          AttributeType: S
+      KeySchema:
+        - AttributeName: article_id
+          KeyType: HASH
+
+  DigestFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: medium-daily-digest
+      CodeUri: src/
+      Handler: handler.handler
+      Description: Check Medium RSS for Taipei-today articles, summarize, LINE notify
+      Environment:
+        Variables:
+          MEDIUM_RSS_URL: !Ref MediumRssUrl
+          DDB_TABLE_NAME: !Ref DigestTable
+          SECRET_ARN: !Ref SecretArn
+          CLAUDE_MODEL: !Ref ClaudeModel
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+              Resource: !GetAtt DigestTable.Arn
+            - Effect: Allow
+              Action:
+                - secretsmanager:GetSecretValue
+              Resource: !Ref SecretArn
+      Events:
+        DailyNoonTaipei:
+          Type: Schedule
+          Properties:
+            Schedule: cron(0 4 * * ? *)
+            Description: Daily at 12:00 Asia/Taipei (UTC 04:00)
+            Enabled: !If [ScheduleEnabled, true, false]
+
+  DigestErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: medium-daily-digest-errors
+      AlarmDescription: Lambda Errors >= 1 for medium-daily-digest
+      Namespace: AWS/Lambda
+      MetricName: Errors
+      Dimensions:
+        - Name: FunctionName
+          Value: !Ref DigestFunction
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      TreatMissingData: notBreaching
+
+Outputs:
+  DigestFunctionArn:
+    Description: Lambda function ARN
+    Value: !GetAtt DigestFunction.Arn
+  DigestFunctionName:
+    Description: Lambda function name
+    Value: !Ref DigestFunction
+  DigestTableName:
+    Description: DynamoDB table name
+    Value: !Ref DigestTable
+  DigestTableArn:
+    Description: DynamoDB table ARN
+    Value: !GetAtt DigestTable.Arn
