@@ -1,12 +1,13 @@
-"""Asia/Taipei calendar helpers."""
+"""Asia/Taipei calendar helpers and recent-window checks."""
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from zoneinfo import ZoneInfo
 
 TAIPEI = ZoneInfo("Asia/Taipei")
+DEFAULT_LOOKBACK_HOURS = 24
 
 
 def taipei_today(now: datetime | None = None) -> date:
@@ -55,3 +56,20 @@ def is_taipei_today(dt: datetime, today: date | None = None) -> bool:
     if today is None:
         today = taipei_today()
     return dt.astimezone(TAIPEI).date() == today
+
+
+def is_within_last_hours(
+    dt: datetime,
+    *,
+    hours: float = DEFAULT_LOOKBACK_HOURS,
+    now: datetime | None = None,
+) -> bool:
+    """True if dt is at or after (now - hours)."""
+    if now is None:
+        now = datetime.now(tz=timezone.utc)
+    elif now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    cutoff = now - timedelta(hours=hours)
+    return dt.astimezone(timezone.utc) >= cutoff.astimezone(timezone.utc)

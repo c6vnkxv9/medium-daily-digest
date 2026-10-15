@@ -1,6 +1,6 @@
-# Medium 每日新文 → 摘要 → LINE 通知
+# Medium 每日新文 → 摘要 → Discord
 
-每天台灣時間 **12:00**（UTC 04:00）檢查指定 Medium RSS；若有當日尚未處理的新文，寫入 DynamoDB、用 Claude 產繁體中文摘要，並以 LINE Messaging API 推播。
+每天台灣時間 **12:00**（UTC 04:00）檢查指定 Medium RSS；若有**最近 24 小時內**、且尚未處理的新文，以 Claude 產繁體中文摘要，經 Discord Incoming Webhook 推播，並寫入 DynamoDB 去重。
 
 ## 架構
 
@@ -8,24 +8,44 @@
 EventBridge cron(0 4 * * ? *)
         ↓
      Lambda (Python 3.12)
-        ├─ Secrets Manager（Claude / LINE）
-        ├─ GET Medium RSS
+        ├─ Secrets Manager（Claude / Discord webhook / Medium 目標）
+        ├─ GET Medium RSS → 最近 24h 過濾
         ├─ DynamoDB 去重與寫入
         ├─ Claude Messages API
-        └─ LINE Push Message
+        └─ Discord Webhook
 ```
 
-## Phase 0 — 帳號與金鑰
+## 專案結構
+
+```
+src/
+  handler.py          # Lambda 入口（handler → process_once）
+  rss.py              # RSS fetch / parse / 24h filter / HTML→純文字
+  summarize.py        # Claude 摘要（zh-TW）
+  discord_notify.py   # Discord Incoming Webhook
+  store.py            # DynamoDB 去重
+  secrets.py          # Secrets Manager
+  timeutil.py         # pubDate、24h 時間窗、Taipei 顯示
+template.yaml         # SAM（Lambda + DynamoDB + 排程 + 錯誤警報）
+samconfig.toml        # SAM 預設參數
+events/test-event.json
+scripts/smoke_check.py
+requirements.txt      # 刻意幾乎空白（執行期只用 stdlib + boto3）
+.env.example
+```
+
+## 前置準備
 
 1. 確認 RSS 可開：
 
 ```bash
-curl -sL -A "MediumDailyDigest/1.0" "https://medium.com/feed/@h9r2sx0m" | head -c 500
+curl -sL -A "MediumDailyDigest/1.0" \
+  "https://medium.com/feed/@YOUR_MEDIUM_USERNAME" | head -c 500
 ```
 
 2. 準備 [Anthropic API Key](https://console.anthropic.com/)
-3. 建立 [LINE Messaging API](https://developers.line.biz/) Channel，加好友後取得 `userId`（Webhook 可先關；用 push 不需回覆）
-4. 本機各測一次（勿把 token 寫進 repo）：
+3. Discord：伺服器設定 → 整合 → Webhook → 新增 → 複製 URL
+4. 可選：本機各測一次（勿把 token 寫進 repo）：
 
 ```bash
 # Claude
@@ -35,43 +55,43 @@ curl https://api.anthropic.com/v1/messages \
   -H "content-type: application/json" \
   -d '{"model":"claude-sonnet-4-5","max_tokens":64,"messages":[{"role":"user","content":"用繁中回：ok"}]}'
 
-# LINE push
-curl -X POST https://api.line.me/v2/bot/message/push \
+# Discord（建議帶 User-Agent；Lambda 亦同，避免 Cloudflare 1010）
+curl -X POST "$DISCORD_WEBHOOK_URL" \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $LINE_CHANNEL_ACCESS_TOKEN" \
-  -d "{\"to\":\"$LINE_USER_ID\",\"messages\":[{\"type\":\"text\",\"text\":\"digest test\"}]}"
+  -H "User-Agent: MediumDailyDigest/1.0" \
+  -d '{"content":"digest test"}'
 ```
 
-5. 在 AWS Secrets Manager 建立 secret（JSON）：
+5. 在 AWS Secrets Manager（建議 `ap-northeast-1`）建立 JSON secret：
 
 ```json
 {
   "CLAUDE_API_KEY": "...",
-  "LINE_CHANNEL_ACCESS_TOKEN": "...",
-  "LINE_USER_ID": "..."
+  "DISCORD_WEBHOOK_URL": "https://discord.com/api/webhooks/...",
+  "MEDIUM_USERNAME": "YOUR_MEDIUM_USERNAME"
 }
 ```
 
-記下 ARN，部署時傳入 `SecretArn`。
+也可改放 `"MEDIUM_RSS_URL": "https://medium.com/feed/@YOUR_MEDIUM_USERNAME"`（有設時優先於 username）。記下 ARN，部署時傳入 `SecretArn`。
 
-## 專案結構
+## 本機設定
 
-```
-src/
-  handler.py       # Lambda 入口
-  rss.py           # RSS fetch / parse / 台北今日 filter
-  summarize.py     # Claude 摘要
-  line_notify.py   # LINE push
-  store.py         # DynamoDB
-  secrets.py       # Secrets Manager
-  timeutil.py      # Asia/Taipei
-template.yaml      # SAM
-events/test-event.json
-```
+複製 `.env.example` → `.env`（勿提交）：
+
+| 鍵 | 用途 |
+|----|------|
+| `MEDIUM_USERNAME` 或 `MEDIUM_RSS_URL` | RSS 目標（可覆寫 Secret 內同名鍵） |
+| `SECRET_ARN` | Secrets Manager ARN |
+| `DDB_TABLE_NAME` | 部署後為 `medium_daily_digest` |
+| `CLAUDE_MODEL` | 可選；預設 `claude-sonnet-4-5` |
+| `AWS_REGION` | 建議 `ap-northeast-1` |
+| `CLAUDE_API_KEY` / `DISCORD_WEBHOOK_URL` | 僅方便本機 curl 或複製進 Secret；**不會**被執行期覆寫 |
+
+`python handler.py` 會自動載入 repo 根目錄 `.env`（不覆寫已存在的環境變數）。Claude／Discord 金鑰一律從 Secrets Manager 讀取。
 
 ## 部署（SAM）
 
-前置：AWS CLI、[SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)、Docker（可選，給 `sam local`）。
+前置：AWS CLI、[SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html)、可用的 AWS 憑證。Docker 可選（給 `sam local`）。
 
 ```bash
 # 第一次建議先關閉排程，只手動測
@@ -87,82 +107,75 @@ sam deploy --parameter-overrides \
   "EnableSchedule=true"
 ```
 
-可選參數：`MediumRssUrl`、`ClaudeModel`（預設 `claude-sonnet-4-5`）。
+可選參數：`ClaudeModel`（預設 `claude-sonnet-4-5`）。
 
 手動 invoke：
 
 ```bash
 aws lambda invoke \
   --function-name medium-daily-digest \
+  --region ap-northeast-1 \
   --payload '{}' \
   --cli-binary-format raw-in-base64-out \
   /tmp/digest-out.json && cat /tmp/digest-out.json
 ```
 
-## 本機執行（同一套程式）
+## 本機執行
 
-需要可用的 AWS 憑證（讀 Secret + DynamoDB），以及已部署的 table／secret，或本機 mock。
+需具備讀 Secret + DynamoDB 權限的 AWS 憑證，以及已部署的 table／secret。
 
 ```bash
-export MEDIUM_RSS_URL="https://medium.com/feed/@h9r2sx0m"
-export DDB_TABLE_NAME="medium_daily_digest"
-export SECRET_ARN="arn:aws:secretsmanager:..."
-export CLAUDE_MODEL="claude-sonnet-4-5"
-export AWS_REGION="ap-northeast-1"
-
+# 完整 pipeline
 cd src && python handler.py
-```
 
-僅測 RSS 解析（不需 AWS／金鑰）：
-
-```bash
+# 僅測真實 RSS（不需 AWS）
 cd src && python -c "
-from rss import fetch_rss, parse_items, filter_taipei_today
-xml = fetch_rss('https://medium.com/feed/@h9r2sx0m')
+from rss import fetch_rss, parse_items, filter_recent
+xml = fetch_rss('https://medium.com/feed/@YOUR_MEDIUM_USERNAME')
 items = parse_items(xml)
 print('total', len(items))
 for a in items[:3]:
     print(a.published_at, a.title[:60], a.url)
-print('today', len(filter_taipei_today(items)))
+print('recent_24h', len(filter_recent(items)))
 "
-```
 
-離線 smoke（假 RSS／時區／HTML→純文字）：
-
-```bash
+# 離線 smoke（假 RSS／24h 窗／HTML→純文字）
 python3 scripts/smoke_check.py
-```
 
-`sam local invoke`（仍需 AWS 連 DynamoDB／Secrets，或另設 local 替身）：
-
-```bash
+# sam local（DynamoDB／Secrets 仍需真實 AWS）
 sam build
 sam local invoke DigestFunction -e events/test-event.json
 ```
 
-## 行為摘要
+## 行為
 
-| 步驟 | 說明 |
+| 項目 | 說明 |
 |------|------|
-| 當日 | 以 `Asia/Taipei` 的 calendar date 比對 `pubDate` |
-| 去重 | `GetItem` 且 `status=done` → skip；`PutItem` 條件避免覆寫 done |
+| 時間窗 | 只處理 `pubDate` 落在最近 **24 小時**內的文章（非日曆「今日」） |
+| 去重 | DynamoDB `article_id`（RSS guid，否則正規化 link）；`status=done` 則 skip；條件寫入永不覆寫 done |
 | 無新文 | 成功結束、不推播 |
-| LINE 內文 | `標題\n\n摘要\n\n連結` |
-| 回傳 | `{ checked, new, notified, skipped, errors, taipei_date }` |
+| Discord | `標題\n\n摘要\n\n連結`（約 1900 字元截斷；帶 `User-Agent`） |
+| 回傳 body | `{ checked, new, notified, skipped, errors, taipei_date, window_hours }` |
+
+例：中午 12:00 掃過後，當日 15:00 才發的文，隔天 12:00 仍在 24h 窗內 → 會通知（若尚未 `done`）。
 
 ## 驗收
 
-1. 手動 invoke：RSS 有「今日」新文 → DB 一筆、手機收到摘要＋連結  
-2. 再 invoke：同一篇不再推播  
-3. 無新文：成功、不報錯、不推播  
-4. 排程於台北 12:00 觸發（CloudWatch log 時間戳）  
-5. 金鑰不在程式碼與 log 明文  
+1. 手動 invoke：RSS 有「最近 24h」新文 → DB 一筆、Discord 收到摘要＋連結
+2. 再 invoke：同一篇不再推播
+3. 無新文／皆已 done：成功、不報錯、不推播
+4. 排程於台北 12:00 觸發（CloudWatch log）
+5. 金鑰不在程式碼與 log 明文
 
-端到端可用舊文：暫時改程式把 filter 換成指定日期，或在測完後刪除對應 DynamoDB item 後重跑。
+端到端重測：刪除對應 DynamoDB item（`article_id`）後再 invoke。
 
-## IAM（由 SAM 產生）
+## IAM 與資源
 
-- `secretsmanager:GetSecretValue`（該 Secret）  
-- DynamoDB 該 table 讀寫（SAM `DynamoDBCrudPolicy`）  
-- CloudWatch Logs  
-- Alarm：`medium-daily-digest-errors`（Errors ≥ 1）  
+由 `template.yaml` 建立：
+
+- **Lambda** `medium-daily-digest`（Python 3.12、Timeout 60s、Memory 256 MB）
+- **DynamoDB** `medium_daily_digest`（PK `article_id`，PAY_PER_REQUEST）
+- **EventBridge** `cron(0 4 * * ? *)`（可由 `EnableSchedule` 關閉）
+- **CloudWatch 警報** `medium-daily-digest-errors`（Errors ≥ 1）
+
+Lambda 執行角色僅：`secretsmanager:GetSecretValue`（該 Secret）、`dynamodb:GetItem`／`PutItem`（該表）、CloudWatch Logs。

@@ -1,14 +1,13 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Transform: AWS::Serverless-2016-10-31
-Description: Medium daily RSS digest → Claude summary → LINE push (Taipei 12:00)
+Description: Medium daily RSS digest → Claude summary → Discord webhook (Taipei 12:00)
 
 Parameters:
   SecretArn:
     Type: String
-    Description: Secrets Manager ARN with CLAUDE_API_KEY, LINE_CHANNEL_ACCESS_TOKEN, LINE_USER_ID
-  MediumRssUrl:
-    Type: String
-    Default: https://medium.com/feed/@h9r2sx0m
+    Description: >
+      Secrets Manager ARN JSON with CLAUDE_API_KEY, DISCORD_WEBHOOK_URL,
+      and MEDIUM_USERNAME (or MEDIUM_RSS_URL)
   ClaudeModel:
     Type: String
     Default: claude-sonnet-4-5
@@ -46,10 +45,9 @@ Resources:
       FunctionName: medium-daily-digest
       CodeUri: src/
       Handler: handler.handler
-      Description: Check Medium RSS for Taipei-today articles, summarize, LINE notify
+      Description: Check Medium RSS for articles in last 24h, summarize, Discord notify
       Environment:
         Variables:
-          MEDIUM_RSS_URL: !Ref MediumRssUrl
           DDB_TABLE_NAME: !Ref DigestTable
           SECRET_ARN: !Ref SecretArn
           CLAUDE_MODEL: !Ref ClaudeModel

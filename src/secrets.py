@@ -17,7 +17,9 @@ _cached: dict[str, Any] | None = None
 def get_secrets(force_refresh: bool = False) -> dict[str, Any]:
     """
     Return secret JSON with at least:
-      CLAUDE_API_KEY, LINE_CHANNEL_ACCESS_TOKEN, LINE_USER_ID
+      CLAUDE_API_KEY, DISCORD_WEBHOOK_URL
+    Optional (for RSS target; env can override):
+      MEDIUM_USERNAME and/or MEDIUM_RSS_URL
     """
     global _cached
     if _cached is not None and not force_refresh:
@@ -29,11 +31,11 @@ def get_secrets(force_refresh: bool = False) -> dict[str, Any]:
     payload = resp.get("SecretString") or ""
     data = json.loads(payload)
 
-    required = ("CLAUDE_API_KEY", "LINE_CHANNEL_ACCESS_TOKEN", "LINE_USER_ID")
+    required = ("CLAUDE_API_KEY", "DISCORD_WEBHOOK_URL")
     missing = [k for k in required if not data.get(k)]
     if missing:
         raise ValueError(f"Secret missing keys: {', '.join(missing)}")
 
     _cached = data
-    logger.info("secrets_loaded", extra={"keys": list(required)})
+    logger.info("secrets_loaded", extra={"keys": sorted(data.keys())})
     return _cached

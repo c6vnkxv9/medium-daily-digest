@@ -1,4 +1,4 @@
-"""Fetch and parse Medium RSS; filter by Asia/Taipei calendar date."""
+"""Fetch and parse Medium RSS; filter by recent publication window."""
 
 from __future__ import annotations
 
@@ -8,12 +8,17 @@ import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import datetime
 from html import unescape
 from typing import Iterable
 from urllib.parse import urldefrag, urlparse, urlunparse
 
-from timeutil import is_taipei_today, parse_pub_date, taipei_today, to_taipei_iso
+from timeutil import (
+    DEFAULT_LOOKBACK_HOURS,
+    is_within_last_hours,
+    parse_pub_date,
+    to_taipei_iso,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -133,14 +138,14 @@ def parse_items(xml_text: str) -> list[Article]:
     return articles
 
 
-def filter_taipei_today(
+def filter_recent(
     articles: Iterable[Article],
-    today: date | None = None,
+    *,
+    hours: float = DEFAULT_LOOKBACK_HOURS,
+    now: datetime | None = None,
 ) -> list[Article]:
-    """Keep only articles whose pubDate is on Asia/Taipei calendar today."""
-    if today is None:
-        today = taipei_today()
-    return [a for a in articles if is_taipei_today(a.pub_dt, today)]
+    """Keep articles whose pubDate is within the last `hours` (default 24)."""
+    return [a for a in articles if is_within_last_hours(a.pub_dt, hours=hours, now=now)]
 
 
 def html_to_text(html: str, max_chars: int = 8000) -> str:
@@ -158,12 +163,17 @@ def html_to_text(html: str, max_chars: int = 8000) -> str:
     return text
 
 
-def load_today_articles(rss_url: str, today: date | None = None) -> list[Article]:
+def load_recent_articles(
+    rss_url: str,
+    *,
+    hours: float = DEFAULT_LOOKBACK_HOURS,
+    now: datetime | None = None,
+) -> list[Article]:
     xml_text = fetch_rss(rss_url)
     all_items = parse_items(xml_text)
-    today_items = filter_taipei_today(all_items, today=today)
+    recent = filter_recent(all_items, hours=hours, now=now)
     logger.info(
         "rss_parsed",
-        extra={"total": len(all_items), "today": len(today_items)},
+        extra={"total": len(all_items), "recent": len(recent), "hours": hours},
     )
-    return today_items
+    return recent
