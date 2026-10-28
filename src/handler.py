@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from discord_notify import push_message
+from discord_notify import push_alert, push_message
 from rss import html_to_text, load_recent_articles
 from secrets import get_secrets
 from store import is_done, put_done, put_error
@@ -132,7 +132,9 @@ def process_once() -> dict[str, Any]:
 
         except Exception as exc:  # noqa: BLE001 — per-article isolation
             msg = str(exc)
-            result["errors"].append({"article_id": article_id, "error": msg})
+            result["errors"].append(
+                {"article_id": article_id, "title": article.title, "error": msg}
+            )
             logger.exception("article_failed", extra=log_extra)
             try:
                 put_error(
@@ -144,6 +146,18 @@ def process_once() -> dict[str, Any]:
                 )
             except Exception:  # noqa: BLE001
                 logger.exception("ddb_error_write_failed", extra=log_extra)
+
+    if result["errors"]:
+        # 單次執行的所有失敗合併成一則告警；告警失敗不得影響主流程
+        try:
+            push_alert(
+                webhook_url=secrets["DISCORD_WEBHOOK_URL"],
+                errors=result["errors"],
+                taipei_date=result["taipei_date"],
+            )
+            logger.info("alert_sent", extra={"errors": len(result["errors"])})
+        except Exception:  # noqa: BLE001
+            logger.exception("alert_failed")
 
     return result
 

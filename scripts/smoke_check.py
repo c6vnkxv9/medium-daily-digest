@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
+from discord_notify import MAX_TEXT_LEN, format_alert  # noqa: E402
 from rss import filter_recent, html_to_text, parse_items  # noqa: E402
 from timeutil import is_within_last_hours, parse_pub_date  # noqa: E402
 
@@ -64,6 +65,26 @@ def main() -> None:
 
     text = html_to_text("<script>x</script><p>A  &amp; B</p>")
     assert text == "A & B", text
+
+    # 告警格式：401 要帶處理建議、多篇合併成一則、長度不超過 Discord 上限
+    alert = format_alert(
+        [
+            {
+                "article_id": "a1",
+                "title": "文章一",
+                "error": 'Claude HTTP 401: {"message":"invalid x-api-key"}',
+            },
+            {"article_id": "a2", "title": "文章二", "error": "Claude HTTP 401: again"},
+        ],
+        "2026-10-28",
+    )
+    assert "2 篇處理失敗" in alert and "文章一" in alert and "文章二" in alert, alert
+    assert alert.count("CLAUDE_API_KEY") == 1, alert  # 相同建議只出現一次
+    long_alert = format_alert(
+        [{"article_id": str(i), "title": "T" * 50, "error": "E" * 500} for i in range(30)],
+        "2026-10-28",
+    )
+    assert len(long_alert) <= MAX_TEXT_LEN, len(long_alert)
 
     print("smoke_check_ok", {"parsed": len(items), "recent": len(recent_items)})
 
